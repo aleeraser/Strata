@@ -803,8 +803,14 @@ def hybrid_pool_workers(cores) -> int | None:
 def recommend_pool_workers(args: list) -> list:
     """`args` with setup's recommended `--pool-workers` for a hybrid CPU, unless they set one already (a calibration's
     measured count, or the user's own).  A recommendation: the config line can be edited or removed."""
+    if "--pool-workers" in args:
+        return args
+    pw = os.environ.get("STRATA_POOL_WORKERS", "8")
+    if pw and pw != "0":
+        ok(f"laptop / hybrid CPU tuning: {pw} pool workers (--pool-workers {pw} --no-host-worker)")
+        return [*args, "--pool-workers", str(pw), "--no-host-worker"]
     n = hybrid_pool_workers(cpu_cores())
-    if n is None or "--pool-workers" in args:
+    if n is None:
         return args
     p, e = cpu_cores()
     ok(f"hybrid CPU ({p} performance + {e} efficiency cores): {n} CPU expert workers - the performance cores and half "

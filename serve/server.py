@@ -2599,6 +2599,10 @@ def engine_args(cfg: dict) -> list[str]:
         seg = cfg.get("vram_segment_mib")
         if isinstance(seg, int) and not isinstance(seg, bool) and seg > 0 and "--vram-segment-mib" not in args:
             args += ["--vram-segment-mib", str(seg)]
+    if "--pool-workers" not in args:
+        pw = os.environ.get("STRATA_POOL_WORKERS", "8")
+        if pw and pw != "0":
+            args += ["--pool-workers", str(pw), "--no-host-worker"]
     args += parallel_args(cfg, args)
     return learned_profile_args(cfg, args)
 
