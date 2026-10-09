@@ -139,19 +139,6 @@ mkdir -p "$ROOT/engine"
 cp "$ROOT/build/strata" "$ROOT/engine/strata"
 chmod +x "$ROOT/engine/strata"
 
-CUDA_DIR="$(cd "$(dirname "$NVCC")/.." && pwd)"
-CUDA_LIB_DIR="$CUDA_DIR/lib64"
-VERSION=$(git describe --tags --always 2>/dev/null || echo "0.1.39")
-
-cat << EOF > "$ROOT/engine/BUILD.json"
-{
-  "source": "local",
-  "version": "$VERSION",
-  "archs": [$ARCH],
-  "cuda_dirs": ["$CUDA_LIB_DIR", "/usr/local/cuda/lib64"]
-}
-EOF
-
 # 7. Optional vision encoder build
 if [[ "$BUILD_VISION" -eq 1 ]]; then
     echo "=== Building strata-vision ==="
@@ -170,6 +157,27 @@ if [[ "$BUILD_VISION" -eq 1 ]]; then
     fi
     chmod +x "$ROOT/engine/strata-vision"
 fi
+
+CUDA_DIR="$(cd "$(dirname "$NVCC")/.." && pwd)"
+CUDA_LIB_DIR="$CUDA_DIR/lib64"
+VERSION=$(git describe --tags --always 2>/dev/null || echo "0.1.41")
+VERSION_NUM=$(grep -oP 'project\(strata VERSION \K[0-9.]+' "$ROOT/CMakeLists.txt" 2>/dev/null || echo "0.1.41")
+
+SRC_HASH=$(python3 -c "import setup; print(setup.source_hash(setup.ENGINE_SOURCES))" 2>/dev/null || echo "")
+VSRC_HASH=$(python3 -c "import setup; print(setup.source_hash(setup.VISION_SOURCES))" 2>/dev/null || echo "")
+HAS_VISION=$([[ -f "$ROOT/engine/strata-vision" ]] && echo '"gpu"' || echo '"none"')
+
+cat << EOF > "$ROOT/engine/BUILD.json"
+{
+  "source": "local",
+  "version": "$VERSION_NUM",
+  "archs": [$ARCH],
+  "vision": $HAS_VISION,
+  "cuda_dirs": ["$CUDA_LIB_DIR", "/usr/local/cuda/lib64"],
+  "src": "$SRC_HASH",
+  "vision_src": "$VSRC_HASH"
+}
+EOF
 
 echo ""
 echo "=== Strata successfully built! ==="
