@@ -4084,6 +4084,10 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        if isinstance(sampling, dict) and "experimental_speed_projection" not in (sampling if not defaults else req_values):
+            req_model = str(sampling.get("model") or "").lower()
+            if req_model.endswith(("-unaligned", "-jailbreak", "-ablated")) or "-unaligned" in req_model:
+                sampling["experimental_speed_projection"] = True
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
         if budget and max_new and max_new > 0:
