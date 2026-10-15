@@ -46,6 +46,10 @@ while [[ $# -gt 0 ]]; do
             JOBS="$2"
             shift 2
             ;;
+        -j*)
+            JOBS="${1#-j}"
+            shift
+            ;;
         -h|--help)
             usage
             ;;
@@ -135,7 +139,12 @@ echo "=== Building strata binary ($JOBS jobs) ==="
 cmake --build "$ROOT/build" --target strata -j"$JOBS"
 
 # 6. Copy binary to engine/ and update BUILD.json
+# A running binary cannot be overwritten in place (cp fails with "text file
+# busy"), but it can be renamed: the running engine keeps the old inode until
+# it exits, and the new binary is used on the next engine load.  The .old file
+# stays for rollback.
 mkdir -p "$ROOT/engine"
+[[ -f "$ROOT/engine/strata" ]] && mv "$ROOT/engine/strata" "$ROOT/engine/strata.old"
 cp "$ROOT/build/strata" "$ROOT/engine/strata"
 chmod +x "$ROOT/engine/strata"
 
@@ -150,6 +159,7 @@ if [[ "$BUILD_VISION" -eq 1 ]]; then
       -DCMAKE_CUDA_ARCHITECTURES="$ARCH" \
       -DCMAKE_CUDA_COMPILER="$NVCC"
     cmake --build "$ROOT/build-vision" --target strata-vision -j"$JOBS"
+    [[ -f "$ROOT/engine/strata-vision" ]] && mv "$ROOT/engine/strata-vision" "$ROOT/engine/strata-vision.old"
     if [[ -f "$ROOT/build-vision/bin/strata-vision" ]]; then
         cp "$ROOT/build-vision/bin/strata-vision" "$ROOT/engine/strata-vision"
     elif [[ -f "$ROOT/build-vision/strata-vision" ]]; then
