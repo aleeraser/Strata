@@ -4047,6 +4047,8 @@ class Service:
 
     def _progress(self, last_print, every=1.0, st=None):
         """A progress line in the server window every `every` seconds while a request runs."""
+        if getattr(self, "quiet_progress", False):
+            return last_print
         now = time.time()
         if now - last_print < every:
             return last_print
@@ -6878,6 +6880,10 @@ def main() -> int:
         raise SystemExit(f"[strata] config \"env_to_user\" must be true or false, not {etu!r}")
     import serve.frontend as _frontend
     _frontend.ENV_TO_USER = etu
+    qp = cfg.get("quiet_progress", False) or os.environ.get("STRATA_QUIET_PROGRESS") == "1"
+    if not isinstance(qp, bool):
+        raise SystemExit(f"[strata] config \"quiet_progress\" must be true or false, not {qp!r}")
+    svc.quiet_progress = qp
     rs = cfg.get("repeat_stop_tokens", REPEAT_STOP_TOKENS)   # #606: opt-out with 0
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
