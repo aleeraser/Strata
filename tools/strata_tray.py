@@ -14,6 +14,7 @@ import threading
 import subprocess
 import urllib.request
 import urllib.error
+import fcntl
 
 from PySide6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QMessageBox
@@ -587,7 +588,20 @@ class StrataTrayApp(QObject):
             send_notification("Error", f"Could not launch terminal: {e}")
 
 
+def acquire_instance_lock():
+    lock_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}" or "/tmp"
+    lock_path = os.path.join(lock_dir, "strata-tray.lock")
+    try:
+        lock_file = open(lock_path, "w")
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_file
+    except (BlockingIOError, OSError):
+        print("Another instance of strata-tray is already running. Exiting.")
+        sys.exit(0)
+
+
 def main():
+    lock = acquire_instance_lock()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
