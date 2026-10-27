@@ -3,6 +3,7 @@
 Strata System Tray Indicator for GNOME / Linux
 Built with PySide6 for native StatusNotifierItem / AppIndicator support.
 Allows releasing VRAM/RAM (unload), restarting, stopping, and switching models.
+Includes live RAM pre-check and memory footprints for model variants.
 """
 
 import os
@@ -15,10 +16,10 @@ import urllib.request
 import urllib.error
 
 from PySide6.QtWidgets import (
-    QApplication, QSystemTrayIcon, QMenu
+    QApplication, QSystemTrayIcon, QMenu, QMessageBox
 )
 from PySide6.QtGui import (
-    QIcon, QPixmap, QPainter, QColor, QBrush, QPen, QAction, QActionGroup, QFont, QCursor
+    QIcon, QPixmap, QPainter, QColor, QBrush, QPen, QAction, QActionGroup, QCursor
 )
 from PySide6.QtCore import (
     QTimer, Qt, QObject, Signal, Slot
@@ -31,6 +32,65 @@ LOG_PATH = "/tmp/strata.log"
 USER_ICON_DIR = os.path.expanduser("~/.local/share/strata-tray/icons")
 REPO_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 ICON_DIR = USER_ICON_DIR if os.path.isdir(USER_ICON_DIR) else REPO_ICON_DIR
+
+# Model definitions and memory footprints (Weights + Pinned KV Cache)
+MODEL_VARIANTS = [
+    {
+        "id": "nvfp4-512k",
+        "name": "Qwen 3.8 Flash Next (NVFP4 - 512K)",
+        "ram_gib": 69.5,
+        "weights_gib": 63.3,
+        "kv_gib": 6.2,
+        "group": "NVFP4"
+    },
+    {
+        "id": "nvfp4-256k",
+        "name": "Qwen 3.8 Flash Next (NVFP4 - 256K)",
+        "ram_gib": 66.4,
+        "weights_gib": 63.3,
+        "kv_gib": 3.1,
+        "group": "NVFP4"
+    },
+    {
+        "id": "iq3_s-1m",
+        "name": "Qwen 3.8 Flash Next (IQ3_S - 1M)",
+        "ram_gib": 54.4,
+        "weights_gib": 42.0,
+        "kv_gib": 12.4,
+        "group": "IQ3_S"
+    },
+    {
+        "id": "iq3_s-512k",
+        "name": "Qwen 3.8 Flash Next (IQ3_S - 512K)",
+        "ram_gib": 48.2,
+        "weights_gib": 42.0,
+        "kv_gib": 6.2,
+        "group": "IQ3_S"
+    },
+    {
+        "id": "iq3_s-256k",
+        "name": "Qwen 3.8 Flash Next (IQ3_S - 256K)",
+        "ram_gib": 45.1,
+        "weights_gib": 42.0,
+        "kv_gib": 3.1,
+        "group": "IQ3_S"
+    },
+]
+
+MODEL_MAP = {m["id"]: m for m in MODEL_VARIANTS}
+
+
+def get_mem_available_gib():
+    """Reads exact available RAM in GiB from /proc/meminfo."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    kb = int(line.split()[1])
+                    return round(kb / (1024 * 1024), 1)
+    except Exception:
+        pass
+    return 0.0
 
 
 def send_notification(title, message, icon_name="strata-standby"):
@@ -82,14 +142,24 @@ class StatusWorker(QObject):
                 is_active = False
 
             # Detect active model variant from symlink
-            variant = "nvfp4"
+            variant = "iq3_s-1m"
             try:
                 if os.path.islink(CURRENT_LINK):
                     tgt = os.path.basename(os.path.realpath(CURRENT_LINK))
-                    if "iq3" in tgt:
-                        variant = "iq3_s"
+                    if "nvfp4-256k" in tgt:
+                        variant = "nvfp4-256k"
+                    elif "nvfp4" in tgt:
+                        variant = "nvfp4-512k"
+                    elif "iq3_s-256k" in tgt or "iq3-256k" in tgt:
+                        variant = "iq3_s-256k"
+                    elif "iq3_s-512k" in tgt or "iq3-512k" in tgt:
+                        variant = "iq3_s-512k"
+                    elif "iq3" in tgt:
+                        variant = "iq3_s-1m"
             except Exception:
                 pass
+
+            avail_ram = get_mem_available_gib()
 
             if not is_active:
                 self.status_ready.emit({
@@ -97,7 +167,8 @@ class StatusWorker(QObject):
                     "variant": variant,
                     "model": "None",
                     "loaded": False,
-                    "in_flight": 0
+                    "in_flight": 0,
+                    "avail_ram": avail_ram
                 })
                 return
 
@@ -116,7 +187,8 @@ class StatusWorker(QObject):
                         "variant": variant,
                         "model": model,
                         "loaded": loaded,
-                        "in_flight": in_flight
+                        "in_flight": in_flight,
+                        "avail_ram": avail_ram
                     })
             except Exception:
                 self.status_ready.emit({
@@ -124,7 +196,8 @@ class StatusWorker(QObject):
                     "variant": variant,
                     "model": "Booting...",
                     "loaded": False,
-                    "in_flight": 0
+                    "in_flight": 0,
+                    "avail_ram": avail_ram
                 })
 
         threading.Thread(target=task, daemon=True).start()
@@ -135,11 +208,12 @@ class StrataTrayApp(QObject):
         super().__init__()
         self.app = app
         self.state = "UNKNOWN"
-        self.variant = "nvfp4"
+        self.variant = "iq3_s-1m"
         self.in_flight = 0
+        self.avail_ram = get_mem_available_gib()
         self.busy = False
 
-        # Icons with system theme names for AppIndicator / StatusNotifierItem
+        # Icons with system theme fallback
         self.icon_active = QIcon.fromTheme("strata-active", QIcon(os.path.join(ICON_DIR, "strata-active.png")))
         self.icon_standby = QIcon.fromTheme("strata-standby", QIcon(os.path.join(ICON_DIR, "strata-standby.png")))
         self.icon_stopped = QIcon.fromTheme("strata-stopped", QIcon(os.path.join(ICON_DIR, "strata-stopped.png")))
@@ -203,20 +277,29 @@ class StrataTrayApp(QObject):
 
         # Switch Model Submenu
         self.switch_menu = self.menu.addMenu("Switch Active Model")
+        self.switch_menu.aboutToShow.connect(self.update_switch_menu_labels)
+
         self.action_group = QActionGroup(self.menu)
         self.action_group.setExclusive(True)
 
-        self.act_nvfp4 = QAction("Qwen 3.8 Flash Next (NVFP4 - 512K)", self.switch_menu)
-        self.act_nvfp4.setCheckable(True)
-        self.act_nvfp4.triggered.connect(lambda: self.switch_model("nvfp4"))
-        self.action_group.addAction(self.act_nvfp4)
-        self.switch_menu.addAction(self.act_nvfp4)
+        self.model_actions = {}
+        last_group = None
+        for m in MODEL_VARIANTS:
+            if last_group and last_group != m["group"]:
+                self.switch_menu.addSeparator()
+            last_group = m["group"]
 
-        self.act_iq3 = QAction("Qwen 3.8 Flash Next (IQ3_S - 1M)", self.switch_menu)
-        self.act_iq3.setCheckable(True)
-        self.act_iq3.triggered.connect(lambda: self.switch_model("iq3_s"))
-        self.action_group.addAction(self.act_iq3)
-        self.switch_menu.addAction(self.act_iq3)
+            act = QAction(m["name"], self.switch_menu)
+            act.setCheckable(True)
+            act.triggered.connect(lambda checked=False, mid=m["id"]: self.on_model_action_triggered(mid))
+            self.action_group.addAction(act)
+            self.switch_menu.addAction(act)
+            self.model_actions[m["id"]] = act
+
+        self.switch_menu.addSeparator()
+        self.act_mem_info = QAction("Available RAM: Checking...", self.switch_menu)
+        self.act_mem_info.setEnabled(False)
+        self.switch_menu.addAction(self.act_mem_info)
 
         self.menu.addSeparator()
 
@@ -229,11 +312,30 @@ class StrataTrayApp(QObject):
         self.act_quit.triggered.connect(self.app.quit)
         self.menu.addAction(self.act_quit)
 
+        self.update_switch_menu_labels()
         self.tray.setContextMenu(self.menu)
+
+    def update_switch_menu_labels(self):
+        """Updates model actions with live RAM pre-check and memory footprint."""
+        avail = get_mem_available_gib()
+        self.avail_ram = avail
+
+        for m in MODEL_VARIANTS:
+            act = self.model_actions[m["id"]]
+            req = m["ram_gib"]
+            if avail >= req:
+                margin = round(avail - req, 1)
+                label = f"{m['name']}   [~{req} GB — ✓ Fits (+{margin} GB)]"
+            else:
+                shortfall = round(req - avail, 1)
+                label = f"{m['name']}   [~{req} GB — ⚠️ Needs +{shortfall} GB free]"
+            act.setText(label)
+
+        self.act_mem_info.setText(f"System Available RAM: {avail:.1f} GiB")
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
-            # Left click: show context menu
+            self.update_switch_menu_labels()
             self.menu.popup(QCursor.pos())
 
     def poll_status(self):
@@ -245,22 +347,27 @@ class StrataTrayApp(QObject):
         self.state = info["state"]
         self.variant = info["variant"]
         self.in_flight = info["in_flight"]
+        self.avail_ram = info.get("avail_ram", self.avail_ram)
+        self.update_switch_menu_labels()
 
         # Update checked radio
-        self.act_nvfp4.blockSignals(True)
-        self.act_iq3.blockSignals(True)
-        self.act_nvfp4.setChecked(self.variant == "nvfp4")
-        self.act_iq3.setChecked(self.variant == "iq3_s")
-        self.act_nvfp4.blockSignals(False)
-        self.act_iq3.blockSignals(False)
+        for mid, act in self.model_actions.items():
+            act.blockSignals(True)
+            act.setChecked(mid == self.variant)
+            act.blockSignals(False)
 
-        variant_label = "NVFP4 (512K)" if self.variant == "nvfp4" else "IQ3_S (1M)"
+        current_meta = MODEL_MAP.get(self.variant, {
+            "name": self.variant,
+            "ram_gib": 50.0
+        })
+        current_name = current_meta["name"]
+        current_footprint = current_meta["ram_gib"]
 
         if self.state == "ACTIVE":
             self.tray.setIcon(self.icon_active)
-            self.tray.setToolTip(f"Strata: Running (Model in VRAM)\nModel: {variant_label}")
+            self.tray.setToolTip(f"Strata: Running (Model in VRAM)\nModel: {current_name} (~{current_footprint} GB)\nAvailable RAM: {self.avail_ram:.1f} GiB")
             self.act_status.setText("● Strata: Running (Model in VRAM)")
-            details = f"Active Model: {variant_label}"
+            details = f"Active: {current_name} [~{current_footprint} GB]"
             if self.in_flight > 0:
                 details += f" [Generating: {self.in_flight}]"
             self.act_details.setText(details)
@@ -272,9 +379,9 @@ class StrataTrayApp(QObject):
 
         elif self.state == "STANDBY":
             self.tray.setIcon(self.icon_standby)
-            self.tray.setToolTip(f"Strata: Standby (0 GB VRAM used)\nReady on query: {variant_label}")
+            self.tray.setToolTip(f"Strata: Standby (0 GB VRAM used)\nReady on query: {current_name}\nAvailable RAM: {self.avail_ram:.1f} GiB")
             self.act_status.setText("○ Strata: Standby (0 GB VRAM used)")
-            self.act_details.setText(f"Active: {variant_label} (Loads on next query)")
+            self.act_details.setText(f"Standby: {current_name} [~{current_footprint} GB]")
             self.act_primary.setText("Preload Model into VRAM")
             self.act_primary.setEnabled(True)
             self.act_restart.setEnabled(True)
@@ -293,9 +400,9 @@ class StrataTrayApp(QObject):
 
         elif self.state == "STOPPED":
             self.tray.setIcon(self.icon_stopped)
-            self.tray.setToolTip("Strata: Service Stopped")
+            self.tray.setToolTip(f"Strata: Service Stopped\nConfigured: {current_name}")
             self.act_status.setText("✕ Strata: Service Stopped")
-            self.act_details.setText(f"Configured: {variant_label}")
+            self.act_details.setText(f"Configured: {current_name} [~{current_footprint} GB]")
             self.act_primary.setText("Start Strata Service")
             self.act_primary.setEnabled(True)
             self.act_restart.setEnabled(False)
@@ -312,6 +419,24 @@ class StrataTrayApp(QObject):
                 "strata-standby"
             )
         elif self.state == "STANDBY":
+            # RAM Pre-check before manual preload
+            target_meta = MODEL_MAP.get(self.variant, {"ram_gib": 50.0, "name": self.variant})
+            avail = get_mem_available_gib()
+            if avail < target_meta["ram_gib"]:
+                shortfall = round(target_meta["ram_gib"] - avail, 1)
+                reply = QMessageBox.warning(
+                    None,
+                    "Low Available RAM Warning",
+                    f"<b>{target_meta['name']}</b> requires ~<b>{target_meta['ram_gib']} GiB</b> of RAM.<br><br>"
+                    f"Your system currently has only <b>{avail:.1f} GiB</b> available (short by <b>{shortfall:.1f} GiB</b>).<br><br>"
+                    f"Preloading now may trigger swap thrashing or an OOM kill.<br><br>"
+                    f"Do you want to proceed anyway?",
+                    QMessageBox.Cancel | QMessageBox.Ok,
+                    QMessageBox.Cancel
+                )
+                if reply != QMessageBox.Ok:
+                    return
+
             self.execute_async(
                 self._action_load,
                 "Preloading model into VRAM...",
@@ -355,19 +480,45 @@ class StrataTrayApp(QObject):
                 "strata-stopped"
             )
 
-    def switch_model(self, target_variant):
-        if target_variant == self.variant:
+    def on_model_action_triggered(self, target_id):
+        if target_id == self.variant:
             return
-        pretty = "NVFP4 (512K)" if target_variant == "nvfp4" else "IQ3_S (1M)"
+
+        target_meta = MODEL_MAP.get(target_id)
+        if not target_meta:
+            return
+
+        # RAM Pre-check
+        avail = get_mem_available_gib()
+        req = target_meta["ram_gib"]
+        if avail < req:
+            shortfall = round(req - avail, 1)
+            reply = QMessageBox.warning(
+                None,
+                "Low Available RAM Warning",
+                f"<b>{target_meta['name']}</b> requires approximately <b>{req} GiB</b> of RAM.<br><br>"
+                f"Your system currently has only <b>{avail:.1f} GiB</b> available (short by <b>{shortfall:.1f} GiB</b>).<br><br>"
+                f"If you send queries while available memory is insufficient, the Linux OOM killer is likely to terminate Strata or other active applications.<br><br>"
+                f"Do you want to switch to this model anyway?",
+                QMessageBox.Cancel | QMessageBox.Ok,
+                QMessageBox.Cancel
+            )
+            if reply != QMessageBox.Ok:
+                # Revert selection
+                for mid, act in self.model_actions.items():
+                    act.blockSignals(True)
+                    act.setChecked(mid == self.variant)
+                    act.blockSignals(False)
+                return
 
         def do_switch():
-            subprocess.run([SWITCH_SCRIPT, target_variant], check=True)
+            subprocess.run([SWITCH_SCRIPT, target_id], check=True)
 
         self.execute_async(
             do_switch,
-            f"Switching to {pretty}...",
+            f"Switching to {target_meta['name']}...",
             "Strata",
-            f"Switched to {pretty}. Ready in Standby mode.",
+            f"Switched to {target_meta['name']} [~{req} GB]. Ready in Standby mode.",
             "strata-standby"
         )
 
