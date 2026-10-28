@@ -320,19 +320,39 @@ class StrataTrayApp(QObject):
         """Updates model actions with live RAM pre-check and memory footprint."""
         avail = get_mem_available_gib()
         self.avail_ram = avail
+        is_active = (self.state == "ACTIVE")
+        current_meta = MODEL_MAP.get(self.variant, {})
+        current_footprint = current_meta.get("ram_gib", 0.0) if is_active else 0.0
+        effective_avail = avail + current_footprint
 
         for m in MODEL_VARIANTS:
             act = self.model_actions[m["id"]]
             req = m["ram_gib"]
-            if avail >= req:
-                margin = round(avail - req, 1)
-                label = f"{m['name']}   [~{req} GB — ✓ Fits (+{margin} GB)]"
+
+            if is_active and m["id"] == self.variant:
+                label = f"{m['name']}   [~{req} GB — ● Currently Loaded]"
+            elif effective_avail >= req:
+                margin = round(effective_avail - req, 1)
+                if is_active:
+                    diff = round(req - current_footprint, 1)
+                    if diff < 0:
+                        label = f"{m['name']}   [~{req} GB — ✓ Fits (frees {-diff:.1f} GB, +{margin:.1f} GB margin)]"
+                    elif diff > 0:
+                        label = f"{m['name']}   [~{req} GB — ✓ Fits (+{diff:.1f} GB net, +{margin:.1f} GB margin)]"
+                    else:
+                        label = f"{m['name']}   [~{req} GB — ✓ Fits (same size, +{margin:.1f} GB margin)]"
+                else:
+                    label = f"{m['name']}   [~{req} GB — ✓ Fits (+{margin:.1f} GB)]"
             else:
-                shortfall = round(req - avail, 1)
-                label = f"{m['name']}   [~{req} GB — ⚠️ Needs +{shortfall} GB free]"
+                shortfall = round(req - effective_avail, 1)
+                label = f"{m['name']}   [~{req} GB — ⚠️ Needs +{shortfall:.1f} GB more free]"
+
             act.setText(label)
 
-        self.act_mem_info.setText(f"System Available RAM: {avail:.1f} GiB")
+        if is_active:
+            self.act_mem_info.setText(f"Available RAM: {avail:.1f} GiB  |  Current Model in RAM: ~{current_footprint:.1f} GB")
+        else:
+            self.act_mem_info.setText(f"System Available RAM: {avail:.1f} GiB  (Standby: 0 GB used)")
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -489,16 +509,29 @@ class StrataTrayApp(QObject):
         if not target_meta:
             return
 
-        # RAM Pre-check
+        # RAM Pre-check taking into account whether current model is loaded
         avail = get_mem_available_gib()
         req = target_meta["ram_gib"]
-        if avail < req:
-            shortfall = round(req - avail, 1)
+        is_active = (self.state == "ACTIVE")
+        current_meta = MODEL_MAP.get(self.variant, {})
+        current_footprint = current_meta.get("ram_gib", 0.0) if is_active else 0.0
+        effective_avail = avail + current_footprint
+
+        if effective_avail < req:
+            shortfall = round(req - effective_avail, 1)
+            extra_msg = ""
+            if is_active:
+                extra_msg = (
+                    f"<br><i>(Note: Even after releasing ~{current_footprint:.1f} GiB currently occupied "
+                    f"by {current_meta.get('name', self.variant)}, your system will still be short.)</i><br>"
+                )
             reply = QMessageBox.warning(
                 None,
                 "Low Available RAM Warning",
                 f"<b>{target_meta['name']}</b> requires approximately <b>{req} GiB</b> of RAM.<br><br>"
-                f"Your system currently has only <b>{avail:.1f} GiB</b> available (short by <b>{shortfall:.1f} GiB</b>).<br><br>"
+                f"Effective available memory for switching: <b>{effective_avail:.1f} GiB</b> "
+                f"({avail:.1f} GiB free + ~{current_footprint:.1f} GiB released from current model).<br>"
+                f"Short by <b>{shortfall:.1f} GiB</b>.{extra_msg}<br>"
                 f"If you send queries while available memory is insufficient, the Linux OOM killer is likely to terminate Strata or other active applications.<br><br>"
                 f"Do you want to switch to this model anyway?",
                 QMessageBox.Cancel | QMessageBox.Ok,
