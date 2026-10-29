@@ -183,6 +183,22 @@ class StatusWorker(QObject):
                     activity = data.get("activity", {})
                     in_flight = int(activity.get("in_flight", 0))
 
+                    # Cross-check variant directly against the live engine's reported model & context
+                    api_model = str(data.get("model", "")).lower()
+                    api_ctx = int(data.get("cache_max_tokens") or data.get("context", {}).get("max_positions", 0) or 0)
+                    if "nvfp4" in api_model:
+                        if api_ctx == 262144:
+                            variant = "nvfp4-256k"
+                        elif api_ctx == 524288:
+                            variant = "nvfp4-512k"
+                    elif "iq3" in api_model:
+                        if api_ctx >= 1048576:
+                            variant = "iq3_s-1m"
+                        elif api_ctx == 524288:
+                            variant = "iq3_s-512k"
+                        elif api_ctx == 262144:
+                            variant = "iq3_s-256k"
+
                     self.status_ready.emit({
                         "state": "ACTIVE" if loaded else "STANDBY",
                         "variant": variant,
