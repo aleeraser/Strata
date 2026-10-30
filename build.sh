@@ -177,11 +177,13 @@ SRC_HASH=$(python3 -c "import setup; print(setup.source_hash(setup.ENGINE_SOURCE
 VSRC_HASH=$(python3 -c "import setup; print(setup.source_hash(setup.VISION_SOURCES))" 2>/dev/null || echo "")
 HAS_VISION=$([[ -f "$ROOT/engine/strata-vision" ]] && echo '"gpu"' || echo '"none"')
 
+ARCH_JSON=$(echo "$ARCH" | sed 's/;/ , /g')
+
 cat << EOF > "$ROOT/engine/BUILD.json"
 {
   "source": "local",
   "version": "$VERSION_NUM",
-  "archs": [$ARCH],
+  "archs": [$ARCH_JSON],
   "vision": $HAS_VISION,
   "cuda_dirs": ["$CUDA_LIB_DIR", "/usr/local/cuda/lib64"],
   "src": "$SRC_HASH",
